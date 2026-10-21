@@ -1,124 +1,95 @@
-private fun getJson(url: String): String {
-    val request = Request.Builder().url(url).get().build()
-    httpClient.newCall(request).execute().use { response ->
-        if (!response.isSuccessful) throw IllegalStateException("Servidor respondeu HTTP ${response.code}.")
-        return response.body?.string().orEmpty()
-    }
+package com.vexoplayer.app
+
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
+
+private val Bg = Color(0xFF0D110F)
+private val Panel = Color(0xFF19211C)
+private val Green = Color(0xFF43E86B)
+private val Muted = Color(0xFFA4B4A8)
+private const val DEFAULT_SERVER = "http://agenciacinepoa.top"
+
+private val httpClient: OkHttpClient by lazy {
+    OkHttpClient.Builder()
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
+        .callTimeout(30, TimeUnit.SECONDS)
+        .build()
 }
 
-private fun validateXtream(server: String, user: String, pass: String): Pair<Boolean, String> {
-    return try {
-        val json = JSONObject(getJson(apiUrl(server, user, pass)))
-        val info = json.optJSONObject("user_info")
-        if (info?.optString("auth") == "1") {
-            val status = info.optString("status", "Active")
-            if (status.equals("Active", true)) Pair(true, "")
-            else Pair(false, "A conta não está ativa: $status.")
-        } else Pair(false, "Login não validado. Confira os dados e a compatibilidade da API.")
-    } catch (e: Exception) {
-        Pair(false, e.message ?: "Não foi possível conectar ao servidor.")
-    }
-}
+private data class MediaItem(
+    val id: String,
+    val name: String,
+    val categoryId: String = "",
+    val streamType: String = "",
+    val containerExtension: String = "",
+    val cover: String = "",
+    val plot: String = ""
+)
 
-private fun loadCatalog(
-    creds: XtreamCredentials,
-    section: String
-): Triple<List<Pair<String, String>>, List<MediaItem>, String> {
-    return try {
-        val (catAction, itemAction, idKey) = when (section) {
-            "TV AO VIVO" -> Triple("get_live_categories", "get_live_streams", "stream_id")
-            "FILMES" -> Triple("get_vod_categories", "get_vod_streams", "stream_id")
-            else -> Triple("get_series_categories", "get_series", "series_id")
-        }
-        val catJson = getJson(apiUrl(creds.server, creds.username, creds.password, catAction))
-        val itemJson = getJson(apiUrl(creds.server, creds.username, creds.password, itemAction))
-        val cats = parseArray(catJson).mapNotNull { obj ->
-            val id = obj.optString("category_id")
-            val name = obj.optString("category_name")
-            if (id.isNotBlank() && name.isNotBlank()) id to name else null
-        }
-        val items = parseArray(itemJson).mapNotNull { obj ->
-            val id = obj.optString(idKey).ifBlank { obj.optString("id") }
-            val name = obj.optString("name")
-            if (id.isBlank() || name.isBlank()) null else MediaItem(
-                id = id,
-                name = name,
-                categoryId = obj.optString("category_id"),
-                streamType = when (section) {
-                    "TV AO VIVO" -> "live"
-                    "FILMES" -> "movie"
-                    else -> "series"
-                },
-                containerExtension = obj.optString("container_extension", "mp4"),
-                cover = obj.optString("stream_icon").ifBlank { obj.optString("cover") },
-                plot = obj.optString("plot")
-            )
-        }
-        Triple(cats, items, if (items.isEmpty()) "O servidor respondeu, mas não retornou itens para esta seção." else "")
-    } catch (e: Exception) {
-        Triple(emptyList(), emptyList(), e.message ?: "Falha ao carregar catálogo.")
-    }
-}
+private data class XtreamCredentials(
+    val server: String,
+    val username: String,
+    val password: String
+)
 
-private fun parseArray(raw: String): List<JSONObject> {
-    val array = JSONArray(raw)
-    return (0 until array.length()).mapNotNull { array.optJSONObject(it) }
-}
-
-private fun loadEpisodes(creds: XtreamCredentials, seriesId: String): List<MediaItem> {
-    return try {
-        val json = JSONObject(
-            getJson(apiUrl(creds.server, creds.username, creds.password, "get_series_info", mapOf("series_id" to seriesId)))
-        )
-        val episodes = json.optJSONObject("episodes") ?: return emptyList()
-        val result = mutableListOf<MediaItem>()
-        val seasons = episodes.keys()
-        while (seasons.hasNext()) {
-            val season = episodes.optJSONArray(seasons.next()) ?: continue
-            for (i in 0 until season.length()) {
-                val obj = season.optJSONObject(i) ?: continue
-                val id = obj.optString("id")
-                val name = obj.optString("title").ifBlank { obj.optString("episode_num", "Episódio") }
-                if (id.isNotBlank()) result.add(
-                    MediaItem(
-                        id = id,
-                        name = name,
-                        streamType = "episode",
-                        containerExtension = obj.optString("container_extension", "mp4")
-                    )
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val prefs = getSharedPreferences("vexo", MODE_PRIVATE)
+        setContent {
+            MaterialTheme(
+                colorScheme = darkColorScheme(
+                    primary = Green,
+                    background = Bg,
+                    surface = Panel,
+                    onPrimary = Color.Black,
+                    onBackground = Color.White,
+                    onSurface = Color.White
+                )
+            ) {
+                VexoApp(
+                    initialServer = prefs.getString("server", DEFAULT_SERVER) ?: DEFAULT_SERVER,
+                    initialUser = prefs.getString("user", "") ?: "",
+                    onSave = { server, user ->
+                        prefs.edit().putString("server", server).putString("user", user).apply()
+                    }
                 )
             }
-        }
-        result
-    } catch (_: Exception) {
-        emptyList()
-    }
-}
-
-private fun buildStreamUrl(
-    server: String,
-    username: String,
-    password: String,
-    item: MediaItem,
-    section: String
-): String {
-    val base = server.trim().trimEnd('/')
-    val user = URLEncoder.encode(username, "UTF-8")
-    val pass = URLEncoder.encode(password, "UTF-8")
-    return when (item.streamType) {
-        "live" -> "$base/live/$user/$pass/${item.id}.m3u8"
-        "movie" -> {
-            val ext = item.containerExtension.ifBlank { "mp4" }
-            "$base/movie/$user/$pass/${item.id}.$ext"
-        }
-        "episode" -> {
-            val ext = item.containerExtension.ifBlank { "mp4" }
-            "$base/series/$user/$pass/${item.id}.$ext"
-        }
-        else -> when (section) {
-            "TV AO VIVO" -> "$base/live/$user/$pass/${item.id}.m3u8"
-            "FILMES" -> "$base/movie/$user/$pass/${item.id}.${item.containerExtension.ifBlank { "mp4" }}"
-            else -> "$base/series/$user/$pass/${item.id}.${item.containerExtension.ifBlank { "mp4" }}"
         }
     }
 }
